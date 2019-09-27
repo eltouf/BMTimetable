@@ -3,30 +3,64 @@ package client
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
+	"os"
+	"strconv"
 )
 
-const domain = "opendata.bordeaux-metropole.fr"
-const endpointDatasets = "/api/datasets/1.0"
-const endpointRecords = "/api/records/1.0"
+const host = "opendata.bordeaux-metropole.fr"
 
 // Api Quotas https://help.opendatasoft.com/apis/ods-search-v1/#quotas
-type rateLimit struct {
+type RateLimitError struct {
 	Limit     uint16
 	Remaining uint16
 	Reset     uint16
 }
 
-type Dataset struct {
-	Datasetid string
+func (err *RateLimitError) Error() string {
+	return fmt.Sprintf("%d of %d remaining requests. Next reset at %v", err.Remaining, err.Limit, err.Reset)
 }
 
-func DatasetCatalog() {
+type parameters struct {
+	Timezone string
+	Rows     uint
+	Format   string
+	Staged   bool
+}
 
-	if err := fetchData("https://opendata.bordeaux-metropole.fr/api/datasets/1.0/search/"); err != nil {
+type result struct {
+	Nhits      uint
+	Parameters parameters
+	Datasets   []Dataset
+}
+
+type Dataset struct {
+	Datasetid string
+	Metas     struct {
+		Publisher         string
+		Domain            string
+		RecordsCount      uint
+		Title             string
+		MetadataProcessed string
+		DataProcessed     string
+	}
+	HasRecords bool
+	fields     []interface{}
+}
+
+func DatasetCatalog(parameters *url.Values) []Dataset {
+
+	result, err := fetchData("/api/datasets/1.0/search/", parameters)
+
+	if err != nil {
 		panic(err)
 	}
+
+	return result.Datasets
 
 }
 
@@ -34,38 +68,97 @@ func LookupDataset() {
 
 }
 
-func DownloadRecords() {
+func DownloadRecords(filepath string, dataset Dataset) {
 
+	filters := &url.Values{}
+	filters.Set("dataset", dataset.Datasetid)
+	DownloadFile(filepath, "/api/records/1.0/download", filters)
 }
 
 func LookupRecord() {
 
 }
 
-func fetchData(url string) error {
+func fetchData(endpoint string, parameters *url.Values) (result, error) {
 
 	// Get the data
-	var v map[string]interface{}
-	resp, err := http.Get(url)
+	var result result
+
+	resp, err := doRequest(endpoint, parameters)
+	defer resp.Body.Close()
+
+	if err != nil {
+		return result, err
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		log.Println(err)
+		return result, err
+	}
+
+	return result, nil
+}
+
+func DownloadFile(filepath string, endpoint string, parameters *url.Values) error {
+	log.Println("Download file %s", filepath)
+
+	// Get the data
+	resp, err := doRequest(endpoint, parameters)
+	defer resp.Body.Close()
 
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
 
-	// @todo : throw error https://banzaicloud.com/blog/error-handling-go/
-	log.Println(resp.Status)
-	log.Println(resp.StatusCode)
-	log.Println(resp.Header["X-Ratelimit-Limit"])
-	log.Println(resp.Header["X-Ratelimit-Remaining"])
-	log.Println(resp.Header["X-Ratelimit-Reset"])
-
-	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
-		log.Println(err)
+	// Create the file
+	out, err := os.Create(filepath)
+	if err != nil {
 		return err
 	}
+	defer out.Close()
 
-	//log.Println(v)
+	// Write the body to file
+	_, err = io.Copy(out, resp.Body)
+	return err
+}
 
-	return nil
+func doRequest(endpoint string, parameters *url.Values) (*http.Response, error) {
+	var bmurl = buildURL(endpoint, parameters)
+	log.Println(bmurl)
+	resp, err := http.Get(bmurl.String())
+
+	if err != nil {
+		return resp, err
+	}
+
+	if resp.StatusCode == 400 {
+		resp.Body.Close()
+
+		return resp, &RateLimitError{
+			extractLimit(resp.Header, "X-Ratelimit-Limit"),
+			extractLimit(resp.Header, "X-Ratelimit-Remaining"),
+			extractLimit(resp.Header, "X-Ratelimit-Reset"),
+		}
+	}
+
+	return resp, nil
+}
+
+func buildURL(endpoint string, parameters *url.Values) url.URL {
+	return url.URL{
+		Scheme:   "https",
+		Host:     host,
+		Path:     endpoint,
+		RawQuery: parameters.Encode(),
+	}
+}
+
+func extractLimit(headers map[string][]string, key string) uint16 {
+	limit, err := strconv.ParseInt(headers[http.CanonicalHeaderKey(key)][0], 10, 16)
+
+	if err != nil {
+		panic(err)
+	}
+
+	return uint16(limit)
 }
