@@ -14,7 +14,7 @@ import (
 
 const host = "opendata.bordeaux-metropole.fr"
 
-// Api Quotas https://help.opendatasoft.com/apis/ods-search-v1/#quotas
+//RateLimitError : Api Quotas https://help.opendatasoft.com/apis/ods-search-v1/#quotas
 type RateLimitError struct {
 	Limit     uint16
 	Remaining uint16
@@ -25,82 +25,49 @@ func (err *RateLimitError) Error() string {
 	return fmt.Sprintf("%d of %d remaining requests. Next reset at %v", err.Remaining, err.Limit, err.Reset)
 }
 
-type parameters struct {
+//Parameters result parameters
+type Parameters struct {
 	Timezone string
 	Rows     uint
 	Format   string
 	Staged   bool
 }
 
-type result struct {
-	Nhits      uint
-	Parameters parameters
-	Datasets   []Dataset
-}
+//FetchDatasetsCatalog Fetch a catalog of datasets
+func FetchDatasetsCatalog(parameters *url.Values, result interface{}) {
 
-type Dataset struct {
-	Datasetid string
-	Metas     struct {
-		Publisher         string
-		Domain            string
-		RecordsCount      uint
-		Title             string
-		MetadataProcessed string
-		DataProcessed     string
-	}
-	HasRecords bool
-	fields     []interface{}
-}
-
-func DatasetCatalog(parameters *url.Values) []Dataset {
-
-	result, err := fetchData("/api/datasets/1.0/search/", parameters)
+	err := fetchData("/api/datasets/1.0/search/", parameters, result)
 
 	if err != nil {
 		panic(err)
 	}
-
-	return result.Datasets
-
 }
 
-func LookupDataset() {
-
-}
-
-func DownloadRecords(filepath string, dataset Dataset) {
-
+//DownloadDataset download a dataset into a dest file
+func DownloadDataset(dataset Dataset, dest string) error {
 	filters := &url.Values{}
 	filters.Set("dataset", dataset.Datasetid)
-	DownloadFile(filepath, "/api/records/1.0/download", filters)
+	return downloadFile("/api/records/1.0/download", filters, dest)
 }
 
-func LookupRecord() {
-
-}
-
-func fetchData(endpoint string, parameters *url.Values) (result, error) {
-
-	// Get the data
-	var result result
+func fetchData(endpoint string, parameters *url.Values, result interface{}) error {
 
 	resp, err := doRequest(endpoint, parameters)
 	defer resp.Body.Close()
 
 	if err != nil {
-		return result, err
+		return err
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		log.Println(err)
-		return result, err
+	if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
+		return err
 	}
 
-	return result, nil
+	return nil
 }
 
-func DownloadFile(filepath string, endpoint string, parameters *url.Values) error {
-	log.Println("Download file %s", filepath)
+func downloadFile(endpoint string, parameters *url.Values, dest string) error {
+	log.Printf("Download inprogress : %v", endpoint)
 
 	// Get the data
 	resp, err := doRequest(endpoint, parameters)
@@ -111,7 +78,7 @@ func DownloadFile(filepath string, endpoint string, parameters *url.Values) erro
 	}
 
 	// Create the file
-	out, err := os.Create(filepath)
+	out, err := os.Create(dest)
 	if err != nil {
 		return err
 	}
@@ -119,6 +86,9 @@ func DownloadFile(filepath string, endpoint string, parameters *url.Values) erro
 
 	// Write the body to file
 	_, err = io.Copy(out, resp.Body)
+
+	log.Printf("Download completed : %v", dest)
+
 	return err
 }
 
