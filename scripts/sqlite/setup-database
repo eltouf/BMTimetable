@@ -1,0 +1,5 @@
+.open --new "database/bmtimetable.db"
+
+.read "configs/sqlite/sv_arret_p.sql"
+
+.quit
